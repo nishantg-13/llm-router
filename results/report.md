@@ -5,6 +5,12 @@
 - Questions: 404 usable (0 dropped for missing outcomes); train 202 / held-out test 202, stratified by source
 - Quality is exact match (number or letter). No LLM judge. Intervals are 95% paired bootstrap over test questions
 
+## Summary (computed from the numbers below)
+
+- **Headroom exists.** Small model accuracy 0.916, large 0.985; the small model costs 18% of the large model per request.
+- **Routing could pay off in principle.** An oracle that escalates only when the small model fails reaches accuracy 0.990 at 29% of the large model's cost, escalating 8% of questions.
+- **The routers did not capture it.** The pre-fixed learned router (learned@0.9) escalated 14% and was indistinguishable from a random mix; its ROC-AUC shows no detectable skill (interval includes 0.5).
+
 ## Headroom: how much better is the large model?
 
 | source | n | small acc | large acc |
@@ -19,13 +25,11 @@
 | always_small | 0% | 0.916 [0.876, 0.951] | -0.069 [-0.109, -0.035] | 0.282 [0.222, 0.358] | 17.6 [13.6, 22.6] | 1.64 [1.54, 1.83] | 7.65 [4.54, 10.76] |
 | always_large | 100% | 0.985 [0.965, 1.000] | 0.000 [0.000, 0.000] | 1.598 [1.403, 1.827] | 100.0 [100.0, 100.0] | 3.93 [3.75, 4.19] | 8.48 [7.57, 12.39] |
 | rules | 12% | 0.921 [0.881, 0.955] | -0.064 [-0.104, -0.030] | 0.481 [0.336, 0.688] | 30.1 [22.1, 39.4] | 1.76 [1.57, 1.91] | 8.22 [5.20, 10.95] |
-| learned@0.5 | 0% | 0.916 [0.876, 0.951] | -0.069 [-0.109, -0.035] | 0.282 [0.222, 0.358] | 17.6 [13.6, 22.6] | 1.64 [1.54, 1.83] | 7.65 [4.54, 10.76] |
-| learned@0.7 | 0% | 0.916 [0.876, 0.951] | -0.069 [-0.109, -0.035] | 0.282 [0.222, 0.358] | 17.6 [13.6, 22.6] | 1.64 [1.54, 1.83] | 7.65 [4.54, 10.76] |
-| learned@0.8 | 0% | 0.916 [0.876, 0.951] | -0.069 [-0.109, -0.035] | 0.282 [0.222, 0.358] | 17.6 [13.6, 22.6] | 1.64 [1.54, 1.83] | 7.65 [4.54, 10.76] |
 | learned@0.9 | 14% | 0.936 [0.901, 0.965] | -0.050 [-0.084, -0.020] | 0.426 [0.323, 0.557] | 26.6 [20.0, 34.3] | 1.88 [1.75, 2.05] | 7.80 [4.85, 12.86] |
-| learned@0.95 | 100% | 0.985 [0.965, 1.000] | 0.000 [0.000, 0.000] | 1.598 [1.403, 1.827] | 100.0 [100.0, 100.0] | 3.93 [3.75, 4.19] | 8.48 [7.57, 12.39] |
 | random_mix@0.14 | 14% | 0.925 [0.889, 0.957] | -0.060 [-0.094, -0.030] | 0.464 [0.404, 0.537] | 29.1 [25.6, 33.3] | n/a | n/a |
 | oracle (upper bound) | 8% | 0.990 [0.975, 1.000] | 0.005 [0.000, 0.015] | 0.458 [0.332, 0.621] | 28.7 [21.6, 36.9] | 1.79 [1.58, 1.93] | 8.25 [6.85, 10.73] |
+
+Rows collapsed because their routing decisions were identical to another row: learned@0.5, learned@0.7, learned@0.8 (identical to always_small); learned@0.95 (identical to always_large). The learned router's scores on the test set ranged only from 0.83 to 0.95, so the threshold sweep carries little information. The full table is in `results/summary.json`.
 
 ## Headline operating point: learned@0.9 (fixed before looking at held-out results)
 
@@ -61,7 +65,7 @@ Threshold-free frontier: send the k% least-confident questions to the large mode
 
 ## Router overhead (this machine, per request, single prompt)
 
-- rules: 0.007 ms; learned (embedding + logistic regression): 13.2 ms
+- rules: 0.008 ms; learned (embedding + logistic regression): 10.0 ms
 
 ## Limitations
 
