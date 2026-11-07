@@ -42,12 +42,18 @@ class Result:
 
 
 class GeminiBackend:
-    def __init__(self, client, model: str):
+    def __init__(self, client, model: str, temperature: float | None = None):
         self._client = client  # keep a reference so the SDK's HTTP client is not collected mid-call
         self._model = model
+        self._temperature = temperature
 
     async def stream(self, prompt: str) -> AsyncIterator[Chunk]:
-        stream = await self._client.aio.models.generate_content_stream(model=self._model, contents=prompt)
+        kwargs = {}
+        if self._temperature is not None:
+            from google.genai import types
+
+            kwargs["config"] = types.GenerateContentConfig(temperature=self._temperature)
+        stream = await self._client.aio.models.generate_content_stream(model=self._model, contents=prompt, **kwargs)
         async for chunk in stream:
             usage = chunk.usage_metadata
             inp = out = None

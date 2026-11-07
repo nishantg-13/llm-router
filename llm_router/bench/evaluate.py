@@ -75,11 +75,18 @@ def _ci(x: np.ndarray) -> tuple[float, float]:
 
 
 def bootstrap(a: Arrays, policies: dict[str, np.ndarray], reference: str, B: int = BOOTSTRAPS, seed: int = 0) -> dict:
-    """Paired bootstrap over questions. Every policy is scored on the same resampled questions, so differences
-    against `reference` are paired. Returns point estimates and 95% intervals."""
-    n = a.correct.shape[1]
-    idx = np.random.default_rng(seed).integers(0, n, size=(B, n))
+    """Paired bootstrap over questions for routing policies expressed as P(large) per question."""
     outs = {name: apply_choice(a, p) for name, p in policies.items()}
+    fracs = {name: float(np.mean(p)) for name, p in policies.items()}
+    return bootstrap_outcomes(outs, fracs, reference, B, seed)
+
+
+def bootstrap_outcomes(outs: dict[str, dict], fracs: dict[str, float], reference: str, B: int = BOOTSTRAPS, seed: int = 0) -> dict:
+    """Paired bootstrap over questions. Every policy is scored on the same resampled questions, so differences
+    against `reference` are paired. `outs[name]` holds per-question arrays: correct, cost, and optionally total and
+    ttft. Latency fields are reported only when they are fully defined. Returns point estimates and 95% intervals."""
+    n = len(outs[reference]["correct"])
+    idx = np.random.default_rng(seed).integers(0, n, size=(B, n))
     ref = outs[reference]
     ref_acc_b, ref_cost_b = ref["correct"][idx].mean(1), ref["cost"][idx].mean(1)
     result: dict[str, dict] = {}
@@ -87,28 +94,30 @@ def bootstrap(a: Arrays, policies: dict[str, np.ndarray], reference: str, B: int
         acc_b, cost_b = o["correct"][idx].mean(1), o["cost"][idx].mean(1)
         row = {
             "n": n,
-            "frac_large": float(np.mean(policies[name])),
+            "frac_large": fracs[name],
             "accuracy": (float(o["correct"].mean()), *_ci(acc_b)),
             "cost_per_1k_usd": (float(o["cost"].mean() * 1000), *_ci(cost_b * 1000)),
             "acc_delta_vs_ref": (float(o["correct"].mean() - ref["correct"].mean()), *_ci(acc_b - ref_acc_b)),
             "cost_pct_of_ref": (float(o["cost"].mean() / ref["cost"].mean() * 100), *_ci(cost_b / ref_cost_b * 100)),
         }
-        if not np.isnan(o["total"]).any():
-            for key in ("total", "ttft"):
-                p50 = np.percentile(o[key][idx], 50, axis=1)
-                row[f"{key}_p50"] = (float(np.percentile(o[key], 50)), *_ci(p50))
-            p95 = np.percentile(o["total"][idx], 95, axis=1)
-            row["total_p95"] = (float(np.percentile(o["total"], 95)), *_ci(p95))
+        for key in ("total", "ttft"):
+            if key in o and not np.isnan(o[key]).any():
+                row[f"{key}_p50"] = (float(np.percentile(o[key], 50)), *_ci(np.percentile(o[key][idx], 50, axis=1)))
+        if "total" in o and not np.isnan(o["total"]).any():
+            row["total_p95"] = (float(np.percentile(o["total"], 95)), *_ci(np.percentile(o["total"][idx], 95, axis=1)))
         result[name] = row
     return result
 
 
+def paired_diff_values(d: np.ndarray, B: int = BOOTSTRAPS, seed: int = 0) -> tuple[float, float, float]:
+    """Mean of per-question differences d with a bootstrap interval over questions."""
+    idx = np.random.default_rng(seed).integers(0, len(d), size=(B, len(d)))
+    return float(d.mean()), *_ci(d[idx].mean(1))
+
+
 def paired_diff(a: Arrays, p1: np.ndarray, p2: np.ndarray, B: int = BOOTSTRAPS, seed: int = 0) -> tuple[float, float, float]:
     """Accuracy of policy 1 minus policy 2 with a paired bootstrap interval."""
-    n = a.correct.shape[1]
-    idx = np.random.default_rng(seed).integers(0, n, size=(B, n))
-    d = apply_choice(a, p1)["correct"] - apply_choice(a, p2)["correct"]
-    return float(d.mean()), *_ci(d[idx].mean(1))
+    return paired_diff_values(apply_choice(a, p1)["correct"] - apply_choice(a, p2)["correct"], B, seed)
 
 
 def _fmt(t: tuple[float, float, float], digits: int = 3, scale: float = 1.0, suffix: str = "") -> str:
@@ -214,9 +223,41 @@ def evaluate(questions: list[Question], path: Path, embed, train_fraction: float
         "frontier": ranked_frontier(a_test, p_ok, (0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.0), seed=seed),
     }
 
-    report = render(cfg, len(usable), dropped, len(train), len(test), stats, headroom, overhead, headline, frac, vs_random, explore)
+    hidden = {}
+    for thr in THRESHOLDS:
+        name = f"learned@{thr}"
+        if name == headline:
+            continue
+        for ref in ("always_small", "always_large"):
+            if np.array_equal(policies[name], policies[ref]):
+                hidden[name] = ref
+                break
+    p_range = (float(p_ok.min()), float(p_ok.max()))
+
+    report = render(cfg, len(usable), dropped, len(train), len(test), stats, headroom, overhead, headline, frac, vs_random,
+                    explore, hidden=hidden, p_range=p_range)
     return report, {"stats": stats, "headroom": headroom, "overhead_ms": overhead, "n_train": len(train), "n_test": len(test),
                     "dropped": dropped, "vs_random_acc_diff": vs_random, "explore": explore}
+
+
+def render_summary(stats: dict, headline: str, vs_random: tuple, explore: dict, frac: float) -> list[str]:
+    """Plain-language summary computed from the numbers below; nothing here is typed by hand."""
+    sm, lg, orc, h = stats["always_small"], stats["always_large"], stats["oracle (upper bound)"], stats[headline]
+    auc = explore["auc_overall"]
+    r_lo, r_hi = vs_random[1:]
+    rv = "indistinguishable from a random mix" if r_lo <= 0 <= r_hi else ("worse than a random mix" if r_hi < 0 else "better than a random mix")
+    a_lo, a_hi = (auc[1], auc[2]) if auc else (None, None)
+    av = "no detectable skill (interval includes 0.5)" if auc and a_lo <= 0.5 <= a_hi else ("some skill" if auc and a_lo > 0.5 else "n/a")
+    return [
+        "## Summary (computed from the numbers below)\n",
+        (f"- **Headroom exists.** Small model accuracy {sm['accuracy'][0]:.3f}, large {lg['accuracy'][0]:.3f}; the small model costs "
+         f"{sm['cost_pct_of_ref'][0]:.0f}% of the large model per request."),
+        (f"- **Routing could pay off in principle.** An oracle that escalates only when the small model fails reaches accuracy "
+         f"{orc['accuracy'][0]:.3f} at {orc['cost_pct_of_ref'][0]:.0f}% of the large model's cost, escalating {orc['frac_large'] * 100:.0f}% of questions."),
+        (f"- **The routers did not capture it.** The pre-fixed learned router ({headline}) escalated {h['frac_large'] * 100:.0f}% and was "
+         f"{rv}; its ROC-AUC shows {av}."),
+        "",
+    ]
 
 
 def render_explore(x: dict) -> list[str]:
@@ -238,7 +279,8 @@ def render_explore(x: dict) -> list[str]:
     return L
 
 
-def render(cfg, n_usable, dropped, n_train, n_test, stats, headroom, overhead, headline, frac, vs_random, explore) -> str:
+def render(cfg, n_usable, dropped, n_train, n_test, stats, headroom, overhead, headline, frac, vs_random, explore,
+           hidden=(), p_range=None) -> str:
     m = cfg["models"]
     L = []
     L.append("# Results (generated by `python -m llm_router evaluate`; never edited by hand)\n")
@@ -246,6 +288,8 @@ def render(cfg, n_usable, dropped, n_train, n_test, stats, headroom, overhead, h
     L.append(f"- Large tier: `{m['large']['name']}` (${m['large']['usd_per_1m_input']}/1M in, ${m['large']['usd_per_1m_output']}/1M out)")
     L.append(f"- Questions: {n_usable} usable ({dropped} dropped for missing outcomes); train {n_train} / held-out test {n_test}, stratified by source")
     L.append("- Quality is exact match (number or letter). No LLM judge. Intervals are 95% paired bootstrap over test questions\n")
+
+    L += render_summary(stats, headline, vs_random, explore, frac)
 
     L.append("## Headroom: how much better is the large model?\n")
     L.append("| source | n | small acc | large acc |\n|---|---|---|---|")
@@ -256,10 +300,21 @@ def render(cfg, n_usable, dropped, n_train, n_test, stats, headroom, overhead, h
     L.append("| policy | % to large | accuracy | Δ acc vs always-large | cost / 1k req (USD) | cost as % of always-large | latency p50 (s) | latency p95 (s) |")
     L.append("|---|---|---|---|---|---|---|---|")
     for name, s in stats.items():
+        if name in hidden:
+            continue
         p50 = _fmt(s["total_p50"], 2) if "total_p50" in s else "n/a"
         p95 = _fmt(s["total_p95"], 2) if "total_p95" in s else "n/a"
         L.append(f"| {name} | {s['frac_large'] * 100:.0f}% | {_fmt(s['accuracy'])} | {_fmt(s['acc_delta_vs_ref'])} | "
                  f"{_fmt(s['cost_per_1k_usd'], 3)} | {_fmt(s['cost_pct_of_ref'], 1)} | {p50} | {p95} |")
+
+    if hidden:
+        groups = {}
+        for name, same_as in hidden.items():
+            groups.setdefault(same_as, []).append(name)
+        parts = [f"{', '.join(v)} (identical to {k})" for k, v in groups.items()]
+        L.append("\nRows collapsed because their routing decisions were identical to another row: " + "; ".join(parts) + ". "
+                 f"The learned router's scores on the test set ranged only from {p_range[0]:.2f} to {p_range[1]:.2f}, so the threshold sweep "
+                 "carries little information. The full table is in `results/summary.json`.")
 
     h = stats[headline]
     L.append(f"\n## Headline operating point: {headline} (fixed before looking at held-out results)\n")

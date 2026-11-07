@@ -122,6 +122,39 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cascade_collect(args: argparse.Namespace) -> int:
+    from llm_router.bench.cascade import TEMPERATURE, K, collect_samples
+    from llm_router.bench.data import load_questions
+    from llm_router.config import ROOT, load_config
+    from llm_router.runtime import build_pool
+
+    cfg = load_config()
+    b = cfg["bench"]
+    questions = load_questions(b["n_gsm8k"], b["n_mmlu"], b["seed"])
+    out = ROOT / args.out
+    print(f"{len(questions)} questions x {K} small samples at temperature {TEMPERATURE} -> {out}")
+    stats = asyncio.run(collect_samples(build_pool(cfg, temperature=TEMPERATURE), questions, out, b["max_concurrency"]))
+    print(stats)
+    return 0 if stats["failed"] == 0 else 2
+
+
+def cmd_cascade_evaluate(args: argparse.Namespace) -> int:
+    import json
+
+    from llm_router.bench.cascade import evaluate_cascade
+    from llm_router.bench.data import load_questions
+    from llm_router.config import ROOT, load_config
+
+    cfg = load_config()
+    b = cfg["bench"]
+    questions = load_questions(b["n_gsm8k"], b["n_mmlu"], b["seed"])
+    report, summary = evaluate_cascade(questions, ROOT / "results/collect.jsonl", ROOT / args.samples, cfg, seed=b["seed"])
+    (ROOT / "results" / "cascade_report.md").write_text(report)
+    (ROOT / "results" / "cascade_summary.json").write_text(json.dumps(summary, indent=2, default=float))
+    print(report)
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -161,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
     ev = sub.add_parser("evaluate", help="replay policies on recorded outcomes and write results/report.md")
     ev.add_argument("--out", default="results/collect.jsonl")
     ev.set_defaults(fn=cmd_evaluate)
+    cc = sub.add_parser("cascade-collect", help="draw the pre-registered small-model samples for the cascade")
+    cc.add_argument("--out", default="results/cascade_samples.jsonl")
+    cc.set_defaults(fn=cmd_cascade_collect)
+    ce = sub.add_parser("cascade-evaluate", help="score the pre-registered cascade and write results/cascade_report.md")
+    ce.add_argument("--samples", default="results/cascade_samples.jsonl")
+    ce.set_defaults(fn=cmd_cascade_evaluate)
     sv = sub.add_parser("serve", help="run the gateway")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
