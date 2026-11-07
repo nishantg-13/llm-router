@@ -1,0 +1,24 @@
+# Prices: USD per 1M tokens, paid tier, standard pricing, from https://aistudio.google.com/docs/pricing
+# fetched 2026-11-08 (the page showed no date). Thinking tokens are billed as output. gemini-3.8-flash is at an
+# introductory rate through 2026-12-31 and rises after, so re-check before quoting costs after that date.
+# VERIFY these against the page before publishing any cost figure.
+models:
+  small:
+    name: gemini-2.5-flash-lite
+    usd_per_1m_input: 0.10
+    usd_per_1m_output: 0.40
+  large:
+    name: gemini-3.8-flash
+    usd_per_1m_input: 0.75
+    usd_per_1m_output: 3.75
+
+gateway:
+  request_timeout_s: 30
+  cache_size: 256
+
+bench:
+  n_gsm8k: 200
+  n_mmlu: 204
+  train_fraction: 0.5
+  seed: 7
+  max_concurrency: 8
